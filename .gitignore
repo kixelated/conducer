@@ -1,0 +1,14 @@
+# Local
+.DS_Store
+*.local
+*.log*
+
+# Ignore local Claude Code config
+*.local.json
+
+# IDE
+.idea
+
+# Build stuff.
+target
+/.direnv

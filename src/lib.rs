@@ -22,26 +22,11 @@ pub use producer::{Producer, ProducerMut, ProducerRef};
 pub use waiter::{Waiter, wait};
 pub use weak::Weak;
 
-/// Errors returned when a channel is no longer usable.
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
-    /// The channel was explicitly closed by a producer.
-    #[error("closed")]
-    Closed,
-
-    /// All producers were dropped without explicitly closing.
-    #[error("dropped")]
-    Dropped,
-}
-
-/// A convenience type alias for `Result<T, conducer::Error>`.
-pub type Result<T> = std::result::Result<T, Error>;
-
 #[derive(Debug)]
 pub(crate) struct State<T> {
     pub value: T,
     pub waiters: waiter::WaiterList,
-    pub closed: std::result::Result<(), Error>,
+    pub closed: bool,
 }
 
 impl<T: Default> Default for State<T> {
@@ -54,7 +39,7 @@ impl<T> State<T> {
     pub fn new(value: T) -> Self {
         Self {
             value,
-            closed: Ok(()),
+            closed: false,
             waiters: waiter::WaiterList::new(),
         }
     }

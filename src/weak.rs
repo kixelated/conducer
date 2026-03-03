@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    Counts, Error, State,
+    Counts, State,
     consumer::Consumer,
     lock::*,
     producer::{Producer, ProducerRef},
@@ -22,21 +22,21 @@ pub struct Weak<T> {
 }
 
 impl<T> Weak<T> {
-    /// Upgrade to a [`Producer`], failing if the channel is already closed.
-    pub fn produce(&self) -> Result<Producer<T>, Error> {
+    /// Upgrade to a [`Producer`], returning `None` if the channel is already closed.
+    pub fn produce(&self) -> Option<Producer<T>> {
         // Increment first to prevent the last Producer::drop from
         // closing the state between our check and the return.
         self.counts.producers.fetch_add(1, Ordering::Relaxed);
 
         {
             let state = self.state.lock();
-            if let Err(err) = state.closed.clone() {
+            if state.closed {
                 self.counts.producers.fetch_sub(1, Ordering::Relaxed);
-                return Err(err);
+                return None;
             }
         }
 
-        Ok(Producer {
+        Some(Producer {
             state: self.state.clone(),
             counts: self.counts.clone(),
         })
@@ -61,24 +61,24 @@ impl<T> Weak<T> {
 
     /// Returns `true` if the channel has been closed.
     pub fn is_closed(&self) -> bool {
-        self.state.lock().closed.is_err()
+        self.state.lock().closed
     }
 
     /// Wait until all consumers have been dropped.
     ///
-    /// Returns `Ok(())` when no consumers remain, or `Err` if the channel is closed.
-    pub async fn unused(&self) -> Result<(), Error> {
+    /// Returns `Some(())` when no consumers remain, or `None` if the channel is closed.
+    pub async fn unused(&self) -> Option<()> {
         wait(move |waiter| self.poll_unused(waiter)).await
     }
 
-    fn poll_unused(&self, waiter: &Waiter) -> Poll<Result<(), Error>> {
+    fn poll_unused(&self, waiter: &Waiter) -> Poll<Option<()>> {
         if self.counts.consumers.load(Ordering::Relaxed) == 0 {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Some(()));
         }
 
         let mut state = self.state.lock();
-        if let Err(err) = state.closed.clone() {
-            return Poll::Ready(Err(err));
+        if state.closed {
+            return Poll::Ready(None);
         }
 
         waiter.register(&mut state.waiters);
@@ -86,7 +86,7 @@ impl<T> Weak<T> {
         // Re-check after registration to avoid TOCTOU race where the last
         // consumer drops between the initial check and waiter registration.
         if self.counts.consumers.load(Ordering::Relaxed) == 0 {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Some(()));
         }
 
         Poll::Pending

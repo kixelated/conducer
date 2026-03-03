@@ -4,7 +4,7 @@ use std::{
     task::Poll,
 };
 
-use crate::{Counts, Error, State, lock::*, producer::Producer, waiter::*};
+use crate::{Counts, State, lock::*, producer::Producer, waiter::*};
 
 /// The consuming side of a shared state channel.
 ///
@@ -23,8 +23,8 @@ impl<T> Consumer<T> {
     ///
     /// Calls `f` with a [`ConsumerRef`]. If `f` returns [`Poll::Pending`] and the
     /// channel is still open, registers the waiter for notification. Returns
-    /// `Err` if the channel is closed while pending.
-    pub fn poll<F, R>(&self, waiter: &Waiter, mut f: F) -> Poll<Result<R, Error>>
+    /// `None` if the channel is closed while pending.
+    pub fn poll<F, R>(&self, waiter: &Waiter, mut f: F) -> Poll<Option<R>>
     where
         F: FnMut(&ConsumerRef<'_, T>) -> Poll<R>,
     {
@@ -32,11 +32,11 @@ impl<T> Consumer<T> {
         let consumer_state = ConsumerRef { state };
 
         if let Poll::Ready(res) = f(&consumer_state) {
-            return Poll::Ready(Ok(res));
+            return Poll::Ready(Some(res));
         }
 
-        if let Err(err) = consumer_state.state.closed.clone() {
-            return Poll::Ready(Err(err));
+        if consumer_state.state.closed {
+            return Poll::Ready(None);
         }
 
         // Re-extract state from consumer_state to register
@@ -47,36 +47,36 @@ impl<T> Consumer<T> {
     }
 
     /// Poll for channel closure, registering the waiter if still open.
-    pub fn poll_closed(&self, waiter: &Waiter) -> Poll<Error> {
+    pub fn poll_closed(&self, waiter: &Waiter) -> Poll<()> {
         let mut state = self.state.lock();
-        if let Err(err) = state.closed.clone() {
-            return Poll::Ready(err);
+        if state.closed {
+            return Poll::Ready(());
         }
 
         waiter.register(&mut state.waiters);
         Poll::Pending
     }
 
-    /// Wait until the channel is closed, returning the close error.
-    pub async fn closed(&self) -> Error {
+    /// Wait until the channel is closed.
+    pub async fn closed(&self) {
         wait(move |waiter| self.poll_closed(waiter)).await
     }
 
-    /// Upgrade to a Producer, failing if the state is already closed.
-    pub fn produce(&self) -> Result<Producer<T>, Error> {
+    /// Upgrade to a Producer, returning `None` if the state is already closed.
+    pub fn produce(&self) -> Option<Producer<T>> {
         // Increment first to prevent the last Producer::drop from
         // closing the state between our check and the return.
         self.counts.producers.fetch_add(1, Ordering::Relaxed);
 
         {
             let state = self.state.lock();
-            if let Err(err) = state.closed.clone() {
+            if state.closed {
                 self.counts.producers.fetch_sub(1, Ordering::Relaxed);
-                return Err(err);
+                return None;
             }
         }
 
-        Ok(Producer {
+        Some(Producer {
             state: self.state.clone(),
             counts: self.counts.clone(),
         })

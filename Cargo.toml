@@ -5,14 +5,11 @@ authors = ["Luke Curley"]
 repository = "https://github.com/kixelated/conducer"
 license = "MIT OR Apache-2.0"
 
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 keywords = ["async", "producer", "consumer", "state", "sync"]
 categories = ["asynchronous", "concurrency"]
-
-[dependencies]
-thiserror = "2"
 
 [profile.dev]
 panic = "abort"

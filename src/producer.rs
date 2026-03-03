@@ -4,14 +4,14 @@ use std::{
     task::Poll,
 };
 
-use crate::{Counts, Error, State, consumer::Consumer, lock::*, waiter::*, weak::Weak};
+use crate::{Counts, State, consumer::Consumer, lock::*, waiter::*, weak::Weak};
 
 /// The producing side of a shared state channel.
 ///
 /// Producers hold mutable access to the shared value. When the state is modified
 /// through [`ProducerMut`], all registered consumers are automatically notified.
 /// Cloning a producer increments the producer reference count. When the last
-/// producer is dropped, the channel closes with [`Error::Dropped`].
+/// producer is dropped, the channel is closed.
 #[derive(Debug)]
 pub struct Producer<T> {
     pub(crate) state: Lock<State<T>>,
@@ -46,34 +46,39 @@ impl<T> Producer<T> {
         }
     }
 
-    /// Close the channel with the given error, notifying all consumers.
-    pub fn close(&mut self, err: Error) -> Result<(), Error> {
-        self.modify()?.close(err);
-        Ok(())
+    /// Close the channel, notifying all consumers.
+    pub fn close(&mut self) -> Option<()> {
+        self.modify()?.close();
+        Some(())
     }
 
     /// Acquire mutable access to the shared state.
     ///
     /// Returns a [`ProducerMut`] guard that automatically notifies consumers
-    /// when dropped if the state was modified.
-    pub fn modify(&self) -> Result<ProducerMut<'_, T>, Error> {
+    /// when dropped if the state was modified. Returns `None` if closed.
+    pub fn modify(&self) -> Option<ProducerMut<'_, T>> {
         let state = self.state.lock();
-        state.closed.clone()?;
-        Ok(ProducerMut::new(state))
+        if state.closed {
+            return None;
+        }
+        Some(ProducerMut::new(state))
     }
 
     /// Poll-based mutable access with waker registration.
     ///
     /// Calls `f` with a [`ProducerMut`] guard. If `f` returns [`Poll::Pending`],
     /// registers the waiter for notification when the state next changes.
-    pub fn poll_modify<F, R>(&self, waiter: &Waiter, mut f: F) -> Poll<Result<R, Error>>
+    /// Returns `None` if the channel is closed.
+    pub fn poll_modify<F, R>(&self, waiter: &Waiter, mut f: F) -> Poll<Option<R>>
     where
         F: FnMut(&mut ProducerMut<'_, T>) -> Poll<R>,
     {
-        let mut state = self.modify()?;
+        let Some(mut state) = self.modify() else {
+            return Poll::Ready(None);
+        };
 
         if let Poll::Ready(res) = f(&mut state) {
-            return Poll::Ready(Ok(res));
+            return Poll::Ready(Some(res));
         }
 
         // Reset modified so the drop doesn't immediately wake the waiter we're about to register.
@@ -85,15 +90,15 @@ impl<T> Producer<T> {
         Poll::Pending
     }
 
-    /// Wait until the channel is closed, returning the close error.
-    pub async fn closed(&self) -> Error {
+    /// Wait until the channel is closed.
+    pub async fn closed(&self) {
         wait(move |waiter| self.poll_closed(waiter)).await
     }
 
-    fn poll_closed(&self, waiter: &Waiter) -> Poll<Error> {
+    fn poll_closed(&self, waiter: &Waiter) -> Poll<()> {
         let mut state = self.state.lock();
-        if let Err(err) = state.closed.clone() {
-            return Poll::Ready(err);
+        if state.closed {
+            return Poll::Ready(());
         }
 
         waiter.register(&mut state.waiters);
@@ -102,19 +107,19 @@ impl<T> Producer<T> {
 
     /// Wait until all consumers have been dropped.
     ///
-    /// Returns `Ok(())` when no consumers remain, or `Err` if the channel is closed.
-    pub async fn unused(&self) -> Result<(), Error> {
+    /// Returns `Some(())` when no consumers remain, or `None` if the channel is closed.
+    pub async fn unused(&self) -> Option<()> {
         wait(move |waiter| self.poll_unused(waiter)).await
     }
 
-    fn poll_unused(&self, waiter: &Waiter) -> Poll<Result<(), Error>> {
+    fn poll_unused(&self, waiter: &Waiter) -> Poll<Option<()>> {
         if self.counts.consumers.load(Ordering::Relaxed) == 0 {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Some(()));
         }
 
         let mut state = self.state.lock();
-        if let Err(err) = state.closed.clone() {
-            return Poll::Ready(Err(err));
+        if state.closed {
+            return Poll::Ready(None);
         }
 
         waiter.register(&mut state.waiters);
@@ -122,7 +127,7 @@ impl<T> Producer<T> {
         // Re-check after registration to avoid TOCTOU race where the last
         // consumer drops between the initial check and waiter registration.
         if self.counts.consumers.load(Ordering::Relaxed) == 0 {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Some(()));
         }
 
         Poll::Pending
@@ -171,11 +176,11 @@ impl<T> Drop for Producer<T> {
         // We were the last producer, need to close
         let waiters = {
             let mut state = self.state.lock();
-            if state.closed.is_err() {
+            if state.closed {
                 return;
             }
 
-            state.closed = Err(Error::Dropped);
+            state.closed = true;
             state.waiters.take()
         };
 
@@ -203,10 +208,10 @@ impl<'a, T> ProducerMut<'a, T> {
     }
 
     /// NOTE: This takes self so it's impossible to be in a closed state.
-    pub fn close(mut self, err: Error) {
+    pub fn close(mut self) {
         let state = self.state.as_mut().unwrap();
         // We don't need to check for state.closed because we checked when making ProducerMut
-        state.closed = Err(err);
+        state.closed = true;
         self.modified = true;
     }
 }
@@ -253,7 +258,7 @@ pub struct ProducerRef<'a, T> {
 impl<T> ProducerRef<'_, T> {
     /// Returns `true` if the channel has been closed.
     pub fn is_closed(&self) -> bool {
-        self.state.closed.is_err()
+        self.state.closed
     }
 }
 

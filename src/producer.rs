@@ -133,6 +133,19 @@ impl<T> Producer<T> {
         Poll::Pending
     }
 
+    /// Acquire access to the shared state, with mutable access if the channel is open.
+    ///
+    /// Returns [`ProducerAccess::Mut`] if the channel is open, or
+    /// [`ProducerAccess::Ref`] if closed. Only locks once.
+    pub fn access(&self) -> ProducerAccess<'_, T> {
+        let state = self.state.lock();
+        if state.closed {
+            ProducerAccess::Ref(ProducerRef { state })
+        } else {
+            ProducerAccess::Mut(ProducerMut::new(state))
+        }
+    }
+
     /// Get read-only access to the shared state.
     pub fn borrow(&self) -> ProducerRef<'_, T> {
         ProducerRef {
@@ -267,5 +280,39 @@ impl<T> Deref for ProducerRef<'_, T> {
 
     fn deref(&self) -> &Self::Target {
         &self.state.value
+    }
+}
+
+/// A guard providing either mutable or read-only access to the shared state.
+///
+/// Returned by [`Producer::access()`]. The [`Mut`](ProducerAccess::Mut) variant is returned
+/// when the channel is open; the [`Ref`](ProducerAccess::Ref) variant when closed.
+pub enum ProducerAccess<'a, T> {
+    /// Mutable access (channel is open). Notifies consumers on drop if modified.
+    Mut(ProducerMut<'a, T>),
+    /// Read-only access (channel is closed).
+    Ref(ProducerRef<'a, T>),
+}
+
+impl<T> Deref for ProducerAccess<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            ProducerAccess::Mut(guard) => guard,
+            ProducerAccess::Ref(guard) => guard,
+        }
+    }
+}
+
+impl<'a, T> ProducerAccess<'a, T> {
+    /// Get mutable access if the channel is open.
+    ///
+    /// Returns `None` if closed, but `self` remains usable for reading via [`Deref`].
+    pub fn modify(&mut self) -> Option<&mut ProducerMut<'a, T>> {
+        match self {
+            ProducerAccess::Mut(guard) => Some(guard),
+            ProducerAccess::Ref(_) => None,
+        }
     }
 }

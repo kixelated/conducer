@@ -18,7 +18,7 @@ mod producer;
 mod weak;
 
 pub use consumer::{Consumer, ConsumerRef};
-pub use producer::{Producer, ProducerMut, ProducerRef};
+pub use producer::{Producer, ProducerAccess, ProducerMut, ProducerRef};
 pub use waiter::{Waiter, wait};
 pub use weak::Weak;
 

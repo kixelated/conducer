@@ -93,7 +93,7 @@ struct WaiterFn<F, R> {
 /// Create a [`Future`] from a poll function that receives a [`Waiter`].
 ///
 /// The waiter is kept alive between polls so its registration in a
-/// [`WaiterList`] remains valid until the next poll replaces it.
+/// `WaiterList` remains valid until the next poll replaces it.
 pub fn wait<F, R>(poll: F) -> impl Future<Output = R>
 where
     F: FnMut(&Waiter) -> Poll<R> + Unpin,
